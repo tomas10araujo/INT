@@ -1,0 +1,17 @@
+table_add tb_activate_source activate_source 3 =>
+table_add tb_activate_source activate_source 4 =>
+
+table_add tb_int_source configure_source 10.0.2.2&&&0xFFFFFFFF 10.0.1.1&&&0xFFFFFFFF 0x11FF&&&0x0000 0x22FF&&&0x0000 => 10 10 8 0xFF00 0
+table_add tb_int_source configure_source 10.0.3.3&&&0xFFFFFFFF 10.0.1.1&&&0xFFFFFFFF 0x11FF&&&0x0000 0x22FF&&&0x0000 => 10 10 8 0xFF00 0
+
+
+table_add tb_int_sink configure_sink 4 => 5
+mirroring_add 4 5
+
+
+table_add tb_int_reporting send_report => f6:61:c0:6a:00:04 10.0.0.5 f6:61:c0:6a:14:21 10.0.0.254 6000
+
+table_add tb_int_transit configure_transit => 5 1500
+table_add tb_forward send_to_port 00:00:00:00:02:02&&&0xFFFFFFFF => 3 10
+table_add tb_forward send_to_port 00:00:00:00:03:03&&&0xFFFFFFFF => 4 11
+table_add tb_forward send_to_port 00:00:00:00:01:01&&&0xFFFFFFFF => 2 12
