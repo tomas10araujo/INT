@@ -168,7 +168,8 @@ struct int_metadata_t {
     bit<16> sink_reporting_port;    // on which port INT reports must be send to INT collector
     bit<64> ingress_tstamp;   // pass ingress timestamp from Ingress pipeline to Egress pipeline
     bit<16> ingress_port;  // pass ingress port from Ingress pipeline to Egress pipeline
-
+    bit<32> pkt_counter;
+    bit<32> sample_rate;
 }
 #elif TOFINO
 // in the header of tofino, the metadata should be a multiple of 8 bits.

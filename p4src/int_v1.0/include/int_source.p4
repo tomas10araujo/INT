@@ -1,11 +1,9 @@
-
 /*
  * Copyright 2020-2021 PSNC, FBK
  *
  * Author: Damian Parniewicz, Damu Ding
  *
  * Created in the GN4-3 project.
- *
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,11 +18,13 @@
  * limitations under the License.
  */
 
-// register to store seq
 #ifdef BMV2
-register<bit<16>> (1) hdr_seq_num_register;
+register<bit<16>>(1) hdr_seq_num_register;
+register<bit<32>>(1) int_source_counter; // contador de pacotes
 #elif TOFINO
 Register<bit<16>, bit<16>>(1) hdr_seq_num_register;
+Register<bit<32>, bit<32>>(1) int_source_counter;
+
 RegisterAction<bit<16>, bit<16>, bit<16>>(hdr_seq_num_register)
     update_hdr_seq_num = {
         void apply(inout bit<16> value, out bit<16> result) {
@@ -35,25 +35,16 @@ RegisterAction<bit<16>, bit<16>, bit<16>>(hdr_seq_num_register)
 #endif
 
 #ifdef BMV2
-
 control Int_source(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
-
 #elif TOFINO
-
 control Int_source(inout headers hdr, inout metadata meta, in ingress_intrinsic_metadata_t standard_metadata, in ingress_intrinsic_metadata_from_parser_t imp) {
-
 #endif
 
-    // Configure parameters of INT source node
-    // max_hop - how many INT nodes can add their INT node metadata
-    // hope_metadata_len - how INT metadata words are added by a single INT node
-    // ins_cnt - how many INT headers must be added by a single INT node
-    // ins_mask - instruction_mask defining which information (INT headers types) must added to the packet
     action configure_source(bit<8> max_hop, bit<5> hop_metadata_len, bit<5> ins_cnt, bit<16> ins_mask) {
         hdr.int_shim.setValid();
         hdr.int_shim.int_type = INT_TYPE_HOP_BY_HOP;
-        hdr.int_shim.len = (bit<8>)INT_ALL_HEADER_LEN_BYTES>>2;
-        
+        hdr.int_shim.len = (bit<8>)INT_ALL_HEADER_LEN_BYTES >> 2;
+
         hdr.int_header.setValid();
         hdr.int_header.ver = INT_VERSION;
         hdr.int_header.rep = 0;
@@ -62,7 +53,7 @@ control Int_source(inout headers hdr, inout metadata meta, in ingress_intrinsic_
         hdr.int_header.rsvd1 = 0;
         hdr.int_header.rsvd2 = 0;
         hdr.int_header.hop_metadata_len = hop_metadata_len;
-        hdr.int_header.remaining_hop_cnt = max_hop;  //will be decreased immediately by 1 within transit process
+        hdr.int_header.remaining_hop_cnt = max_hop;
         hdr.int_header.instruction_mask = ins_mask;
 
 #ifdef BMV2
@@ -73,16 +64,11 @@ control Int_source(inout headers hdr, inout metadata meta, in ingress_intrinsic_
 #endif
 
         hdr.int_shim.dscp = hdr.ipv4.dscp;
-        
-        hdr.ipv4.dscp = IPv4_DSCP_INT;   // indicates that INT header in the packet
-        hdr.ipv4.totalLen = hdr.ipv4.totalLen + INT_ALL_HEADER_LEN_BYTES;  // adding size of INT headers
-        
+        hdr.ipv4.dscp = IPv4_DSCP_INT;
+        hdr.ipv4.totalLen = hdr.ipv4.totalLen + INT_ALL_HEADER_LEN_BYTES;
         hdr.udp.len = hdr.udp.len + INT_ALL_HEADER_LEN_BYTES;
     }
-    
-    // INT source must be configured per each flow which must be monitored using INT
-    // Flow is defined by src IP, dst IP, src TCP/UDP port, dst TCP/UDP port 
-    // When INT source configured for a flow then a node adds INT shim header and first INT node metadata headers
+
     table tb_int_source {
         actions = {
             configure_source;
@@ -96,12 +82,10 @@ control Int_source(inout headers hdr, inout metadata meta, in ingress_intrinsic_
         size = 127;
     }
 
-
     action activate_source() {
         meta.int_metadata.source = 1;
     }
-    
-    // table used to active INT source for a ingress port of the switch
+
     table tb_activate_source {
         actions = {
             activate_source;
@@ -112,25 +96,61 @@ control Int_source(inout headers hdr, inout metadata meta, in ingress_intrinsic_
         size = 255;
     }
 
+    action set_sample_rate(bit<32> rate) {
+        meta.int_metadata.sample_rate = rate;
+    }
+
+    table tb_sample_rate {
+        actions = {
+            set_sample_rate;
+        }
+        key = {
+            hdr.ipv4.srcAddr     : ternary;
+            hdr.ipv4.dstAddr     : ternary;
+            meta.layer34_metadata.l4_src: ternary;
+            meta.layer34_metadata.l4_dst: ternary;
+        }
+        size = 127;
+        default_action = set_sample_rate(1); // envia header sempre
+    }
+
+    action read_pkt_counter() {
+        int_source_counter.read(meta.int_metadata.pkt_counter, 0);
+    }
+
+    action increment_pkt_counter() {
+        bit<32> tmp;
+        int_source_counter.read(tmp, 0);
+        tmp = tmp + 1;
+        int_source_counter.write(0, tmp);
+    }
+
+    action reset_pkt_counter() {
+        int_source_counter.write(0, 0);
+    }
 
     apply {
-        #ifdef BMV2
-        // in case of frame clone for the INT sink reporting
-        // ingress timestamp is not available on Egress pipeline
+#ifdef BMV2
         meta.int_metadata.ingress_tstamp = standard_metadata.ingress_global_timestamp;
         meta.int_metadata.ingress_port = (bit<16>)standard_metadata.ingress_port;
-        #elif TOFINO
-        // I need to use bridge to pass customized metadata to egress pipeline
+#elif TOFINO
         meta.int_metadata.setValid();
         meta.int_metadata.ingress_tstamp = imp.global_tstamp;
         meta.int_metadata.ingress_port = (bit<16>)standard_metadata.ingress_port;
-        #endif
-        //check if packet appeard on ingress port with active INT source
+#endif
+
         tb_activate_source.apply();
-        
-        if (meta.int_metadata.source == 1)      
-            //apply INT source logic on INT monitored flow
-            tb_int_source.apply();
+
+        if (meta.int_metadata.source == 1) {
+            tb_sample_rate.apply();     // obter taxa de amostragem
+            read_pkt_counter();         // ler o contador de pacotes
+
+            if (meta.int_metadata.pkt_counter == meta.int_metadata.sample_rate - 1) {
+                tb_int_source.apply();  // aplicar header INT
+                reset_pkt_counter();
+            } else {
+                increment_pkt_counter(); // continuar a contar
+            }
+        }
     }
 }
-
